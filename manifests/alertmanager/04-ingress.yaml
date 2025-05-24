@@ -1,0 +1,20 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: alertmanager
+  namespace: prometheus
+  labels:
+    name: prometheus
+spec:
+  ingressClassName: "nginx"
+  rules:
+  - host: alertmanager-hml.jetsales.com.br
+    http:
+      paths:
+      - pathType: Prefix
+        path: "/"
+        backend:
+          service:
+            name: alertmanager
+            port: 
+              number: 9093

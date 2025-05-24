@@ -1,0 +1,228 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: prometheus
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets:
+                - 'alertmanager.prometheus.svc.cluster.local:9093'
+
+    rule_files:
+      - "/etc/prometheus/alert-rules.yml"
+
+    scrape_configs:
+
+      # Prometheus self
+      - job_name: prometheus
+        static_configs:
+          - targets: ['prometheus:9090']
+
+      # kube-state-metrics
+      - job_name: kube-state-metrics
+        static_configs:
+          - targets: ['kube-state-metrics:8080']
+      
+      - job_name: kube-state-metrics-telemetry
+        static_configs:
+          - targets: ['kube-state-metrics:8081']
+      
+      # Node Exporter (estático)
+      - job_name: 'node-exporter'
+        metrics_path: /metrics
+        static_configs:
+          - targets: ['12.0.10.40:9100']
+            labels:
+              instance_name: k8s-node-1
+          - targets: ['12.0.10.98:9100']
+            labels:
+              instance_name: k8s-node-2
+          - targets: ['12.0.10.231:9100']
+            labels:
+              instance_name: k8s-node-3
+
+      # Kubelet /metrics
+      - job_name: 'kubelet'
+        scheme: https
+        tls_config:
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics
+
+      # Kubelet /metrics/cadvisor
+      - job_name: 'kubelet-cadvisor'
+        scheme: https
+        tls_config:
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+
+      # Kubelet /metrics/probes
+      - job_name: 'kubelet-probes'
+        scheme: https
+        tls_config:
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics/probes
+
+  alert-rules.yml: |
+    groups:
+      - name: node-exporter.rules
+        rules:
+          - alert: InstanceDown
+            expr: up == 0
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Target {{ $labels.instance }} está offline"
+              description: "{{ $labels.job }} - {{ $labels.instance }} está indisponível há 1 minuto."
+          
+          - alert: HighNodeMemoryUsage
+            expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.15
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High memory usage on node {{ $labels.instance }}"
+              description: "Node {{ $labels.instance }} is using more than 85% of its memory."
+          
+          - alert: HighNodeCPUUsage
+            expr: (100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)) > 85
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High CPU usage on node {{ $labels.instance }}"
+              description: "Node {{ $labels.instance }} is using more than 85% of its CPU (averaged over 5m)."
+              
+          - alert: HighNodeDiskUsage
+            expr: (1 - (node_filesystem_avail_bytes{fstype=~"ext4|xfs"} / node_filesystem_size_bytes{fstype=~"ext4|xfs"})) * 100 > 75
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High disk usage on node {{ $labels.instance }} (mount {{ $labels.mountpoint }})"
+              description: "The disk usage on mountpoint {{ $labels.mountpoint }} of node {{ $labels.instance }} has exceeded 75%."
+          
+          - record: node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate
+            expr: |
+              sum by (node, namespace, pod, container) (
+                rate(container_cpu_usage_seconds_total{container!=""}[5m])
+              )
+              
+          - record: namespace:pod_cpu:active:kube_pod_container_resource_requests
+            expr: |
+              sum by (namespace, pod) (
+                kube_pod_container_resource_requests_cpu_cores{container!="", namespace!=""}
+              )
+            
+          - record: namespace:pod_cpu:active:kube_pod_container_resource_limits
+            expr: |
+              sum by (namespace, pod) (
+                kube_pod_container_resource_limits{resource="cpu", unit="core"}
+              )
+            
+          - record: kube_pod_container_resource_requests_cpu_cores
+            expr: |
+              sum by (namespace, pod, container) (
+                kube_pod_container_resource_requests{resource="cpu", unit="core"}
+              )
+              
+          - record: namespace:pod_memory:active:kube_pod_container_resource_requests
+            expr: |
+              sum by (namespace, pod) (
+                kube_pod_container_resource_requests{resource="memory", unit="byte"}
+              )
+      
+          - record: namespace:pod_memory:active:kube_pod_container_resource_limits
+            expr: |
+              sum by (namespace, pod) (
+                kube_pod_container_resource_limits{resource="memory", unit="byte"}
+              )
+
+      - name: otel-collector.rules
+        rules:
+          - alert: OtelCollectorDown
+            expr: up{job="otel-collector"} == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Otel Collector {{ $labels.instance }} não está respondendo"
+              description: "O endpoint de métricas está inacessível há mais de 1 minuto."
+
+          - alert: OtelCollectorCrashLoop
+            expr: kube_pod_container_status_waiting_reason{namespace="monitoring", pod=~"otel-collector.*", reason="CrashLoopBackOff"} > 0
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pod otel-collector em CrashLoopBackOff"
+              description: "Pod {{ $labels.pod }} está em CrashLoopBackOff no namespace {{ $labels.namespace }}."
+
+          - alert: OtelCollectorNoDataIngestion
+            expr: rate(otelcol_receiver_accepted_spans[5m]) < 1
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Otel Collector não está recebendo spans"
+              description: "Nos últimos 5 minutos, o Otel Collector não recebeu nenhum span. Verifique se os aplicativos estão enviando dados corretamente."
+
+          - alert: OtelCollectorHighCPUUsage
+            expr: |
+              rate(container_cpu_usage_seconds_total{container="otel-collector", namespace="monitoring"}[5m]) 
+              / 
+              (container_spec_cpu_quota{container="otel-collector", namespace="monitoring"} 
+              / container_spec_cpu_period{container="otel-collector", namespace="monitoring"}) > 0.9
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Uso de CPU acima de 90% no Otel Collector"
+              description: "O container otel-collector está utilizando mais de 90% da CPU disponível."
+
+          - alert: OtelCollectorHighMemoryUsage
+            expr: |
+              container_memory_usage_bytes{container="otel-collector", namespace="monitoring"} 
+              / 
+              container_spec_memory_limit_bytes{container="otel-collector", namespace="monitoring"} > 0.9
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Uso de memória acima de 90% no Otel Collector"
+              description: "O container otel-collector está utilizando mais de 90% da memória disponível."

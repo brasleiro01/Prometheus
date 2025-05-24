@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: prometheus
+
+resources:
+- ./manifests/alertmanager/01-configmaps.yaml
+- ./manifests/alertmanager/02-deployment.yaml
+- ./manifests/alertmanager/03-service.yaml
+- ./manifests/alertmanager/04-ingress.yaml
+- ./manifests/prometheus/01-pvc.yaml
+- ./manifests/prometheus/02-configmaps.yaml
+- ./manifests/prometheus/03-deployment.yaml
+- ./manifests/prometheus/04-service.yaml
+- ./manifests/prometheus/05-ingress.yaml
+
+
+images:
+- name: prom/alertmanager
+  newName: prom/alertmanager
+  newTag: v0.28.1
+
+- name: prom/prometheus
+  newName: prom/prometheus
+  newTag: v3.3.1
